@@ -46,3 +46,69 @@ endpoint_tag = "homer"
 type = "prometheus_remote_write"
 inputs = [ "homer_scrape", "system_scrape" ]
 endpoint = "http://qryn:3100/prom/remote/write"
+
+# Asterisk CDR logs (logfmt format for Homer CDR Search dashboard)
+[sources.asterisk_cdr]
+type = "file"
+include = ["/var/log/asterisk/cdr-custom/cdr.log"]
+read_from = "beginning"
+
+[sinks.cloki_cdr]
+type = "loki"
+inputs = ["asterisk_cdr"]
+endpoint = "http://qryn:3100"
+compression = "none"
+
+  [sinks.cloki_cdr.labels]
+  type = "log"
+  job = "asterisk-cdr"
+  forwarder = "vector"
+
+  [sinks.cloki_cdr.encoding]
+  codec = "text"
+
+# Asterisk application logs
+[sources.asterisk_logs]
+type = "file"
+include = ["/var/log/asterisk/full.log"]
+read_from = "end"
+
+# Extract log level from Asterisk format: [timestamp] LEVEL[pid]
+# Map to Grafana-standard levels for auto-coloring
+[transforms.asterisk_level]
+type = "remap"
+inputs = ["asterisk_logs"]
+source = '''
+parsed = parse_regex!(.message, r'\] (?P<ast_level>\w+)\[')
+ast = parsed.ast_level
+.level = if ast == "ERROR" {
+  "error"
+} else if ast == "WARNING" {
+  "warning"
+} else if ast == "NOTICE" {
+  "info"
+} else if ast == "VERBOSE" {
+  "info"
+} else if ast == "DEBUG" {
+  "debug"
+} else if ast == "DTMF" {
+  "debug"
+} else {
+  "unknown"
+}
+'''
+
+[sinks.cloki_asterisk]
+type = "loki"
+inputs = ["asterisk_level"]
+endpoint = "http://qryn:3100"
+compression = "none"
+
+  [sinks.cloki_asterisk.labels]
+  type = "asterisk"
+  job = "asterisk"
+  forwarder = "vector"
+  level = "{{ level }}"
+
+  [sinks.cloki_asterisk.encoding]
+  codec = "text"
