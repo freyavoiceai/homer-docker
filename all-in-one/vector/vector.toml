@@ -1,57 +1,85 @@
-# Random Syslog-formatted logs
+[sources.docker_all]
+type = "docker_logs"
+
+[transforms.filter_freya]
+type = "filter"
+inputs = ["docker_all"]
+condition = 'contains(string(.container_name) ?? "", "freya")'
+
+[transforms.freya_parse]
+type = "remap"
+inputs = ["filter_freya"]
+source = '''
+.service = replace(string!(.container_name), r'^/?freya-', "")
+parsed = parse_regex(.message, r'(?i)\b(?P<lvl>error|err|warn|warning|info|debug)\b') ?? {}
+raw_level = downcase(string(parsed.lvl) ?? "info")
+.level = if raw_level == "err" { "error" } else if raw_level == "warning" { "warn" } else { raw_level }
+'''
+
+[sinks.cloki_freya]
+type = "loki"
+inputs = ["freya_parse"]
+endpoint = "http://qryn:3100"
+compression = "none"
+
+  [sinks.cloki_freya.labels]
+  type = "freya"
+  job = "freya"
+  service = "{{ service }}"
+  level = "{{ level }}"
+  forwarder = "vector"
+
+  [sinks.cloki_freya.encoding]
+  codec = "text"
+
 [sources.dummy_logs]
 type = "demo_logs"
 format = "syslog"
 interval = 5.0
 
-# Parse Syslog logs
 [transforms.parse_logs]
 type = "remap"
 inputs = ["dummy_logs"]
-source = '''
-. = parse_syslog!(string!(.message))
-'''
+source = '. = parse_syslog!(string!(.message))'
 
 [sinks.cloki_syslog]
-type="loki"
+type = "loki"
 inputs = ["parse_logs"]
 endpoint = "http://qryn:3100"
-#tenant_id = "0"
 compression = "none"
 
-    [sinks.cloki_syslog.labels]
-    forwarder = "vector"
-    event = "{{ facility }}"
-    type = "syslog"
+  [sinks.cloki_syslog.labels]
+  forwarder = "vector"
+  event = "{{ facility }}"
+  type = "syslog"
 
-    [sinks.cloki_syslog.encoding]
-    codec = "json"
-
+  [sinks.cloki_syslog.encoding]
+  codec = "json"
 
 [sources.homer_scrape]
 type = "prometheus_scrape"
-endpoints = [ "http://heplify-server:9096/metrics" ]
+endpoints = ["http://heplify-server:9096/metrics"]
 scrape_interval_secs = 10
 instance_tag = "heplify"
 endpoint_tag = "homer"
 
 [sources.system_scrape]
 type = "prometheus_scrape"
-endpoints = [ "http://node-exporter:9100/metrics" ]
+endpoints = ["http://node-exporter:9100/metrics"]
 scrape_interval_secs = 10
 instance_tag = "system"
 endpoint_tag = "homer"
 
 [sinks.prom_write]
 type = "prometheus_remote_write"
-inputs = [ "homer_scrape", "system_scrape" ]
+inputs = ["homer_scrape", "system_scrape"]
 endpoint = "http://qryn:3100/prom/remote/write"
 
-# Asterisk CDR logs (logfmt format for Homer CDR Search dashboard)
 [sources.asterisk_cdr]
 type = "file"
 include = ["/var/log/asterisk/cdr-custom/cdr.log"]
 read_from = "beginning"
+ignore_not_found = true
 
 [sinks.cloki_cdr]
 type = "loki"
@@ -67,35 +95,19 @@ compression = "none"
   [sinks.cloki_cdr.encoding]
   codec = "text"
 
-# Asterisk application logs
 [sources.asterisk_logs]
 type = "file"
 include = ["/var/log/asterisk/full.log"]
 read_from = "end"
+ignore_not_found = true
 
-# Extract log level from Asterisk format: [timestamp] LEVEL[pid]
-# Map to Grafana-standard levels for auto-coloring
 [transforms.asterisk_level]
 type = "remap"
 inputs = ["asterisk_logs"]
 source = '''
-parsed = parse_regex!(.message, r'\] (?P<ast_level>\w+)\[')
-ast = parsed.ast_level
-.level = if ast == "ERROR" {
-  "error"
-} else if ast == "WARNING" {
-  "warning"
-} else if ast == "NOTICE" {
-  "info"
-} else if ast == "VERBOSE" {
-  "info"
-} else if ast == "DEBUG" {
-  "debug"
-} else if ast == "DTMF" {
-  "debug"
-} else {
-  "unknown"
-}
+parsed = parse_regex(.message, r'\] (?P<ast_level>\w+)\[') ?? {}
+ast = string(parsed.ast_level) ?? "INFO"
+.level = if ast == "ERROR" { "error" } else if ast == "WARNING" { "warning" } else if ast == "NOTICE" { "info" } else if ast == "VERBOSE" { "info" } else if ast == "DEBUG" { "debug" } else if ast == "DTMF" { "debug" } else { "unknown" }
 '''
 
 [sinks.cloki_asterisk]
