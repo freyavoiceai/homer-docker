@@ -156,8 +156,8 @@
       },
       "id": 1,
       "options": {
-        "aboveArrow": "hostname",
-        "belowArrow": "node",
+        "aboveArrow": "timestamp",
+        "belowArrow": "response",
         "colorGenerator": [
           "callid",
           "type"
@@ -190,7 +190,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "{job=\"heplify-server\", src_ip=~\"$src_ip\", dst_ip=~\"$dst_ip\"} | response=~\"$method\" or type!=\"sip\" |~ `${search:raw}` | regexp \"Call-ID:\\s+(?<callid>.+?\\r\\n)\"",
+          "expr": "{job=\"heplify-server\", src_ip=~\"$src_ip\", dst_ip=~\"$dst_ip\"} | response=~\"$method\" or type!=\"sip\" |= `${callid}` |~ `${search:raw}` | regexp \"Call-ID:\\s+(?<callid>.+?)\\r\\n\"",
           "key": "Q-c40f2e2b-564b-49f7-affa-cdeff6d70adf-0",
           "legendFormat": "",
           "maxLines": 100,
@@ -289,7 +289,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum by (type, response) (count_over_time({job=\"heplify-server\", response=~\"$method\", src_ip=~\"$src_ip\", dst_ip=~\"$dst_ip\"} |~ `$search` [$__interval]))\n",
+          "expr": "sum by (type, response) (count_over_time({job=\"heplify-server\", response=~\"$method\", src_ip=~\"$src_ip\", dst_ip=~\"$dst_ip\"} |= `${callid}` |~ `$search` [$__interval]))\n",
           "key": "Q-c40f2e2b-564b-49f7-affa-cdeff6d70adf-0",
           "queryType": "range",
           "refId": "A"
@@ -355,7 +355,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum by (type, response) (count_over_time({job=\"heplify-server\", response=~\"$method\", src_ip=~\"$src_ip\", dst_ip=~\"$dst_ip\"} |~ `$search` [$__interval]))\n",
+          "expr": "sum by (type, response) (count_over_time({job=\"heplify-server\", response=~\"$method\", src_ip=~\"$src_ip\", dst_ip=~\"$dst_ip\"} |= `${callid}` |~ `$search` [$__interval]))\n",
           "key": "Q-c40f2e2b-564b-49f7-affa-cdeff6d70adf-0",
           "queryType": "range",
           "refId": "A"
@@ -480,6 +480,15 @@
         "options": [],
         "query": "",
         "queryValue": "",
+        "skipUrlSync": false,
+        "type": "textbox"
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "hide": 0,
+        "label": "Call ID",
+        "name": "callid",
+        "query": "",
         "skipUrlSync": false,
         "type": "textbox"
       }
