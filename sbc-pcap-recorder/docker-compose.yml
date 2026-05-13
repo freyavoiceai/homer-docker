@@ -1,0 +1,87 @@
+# SBC-side rolling SIP PCAP recorder.
+#
+# Deploy this on each node that carries raw SIP on the wire — SBC, SIP proxy,
+# Kamailio/OpenSIPS, FreeSWITCH/Asterisk, capture probe behind a TAP/SPAN.
+# It is intentionally NOT part of the HOMER all-in-one stack: HOMER receives
+# HEP-encapsulated metadata; this recorder captures the actual SIP packets
+# at the source, so the two systems answer different questions.
+#
+# Tuning is via environment variables (override in .env or the shell that
+# runs `docker compose up`):
+#
+#   CAP_IFACE           interface to capture on (default: any)
+#   CAP_FILTER          BPF filter (default: SIP on 5060/5061)
+#   CAP_SNAPLEN         per-packet bytes captured (default: 2000 — fits
+#                       large INVITE+SDP; raise to 0 if you add RTP)
+#   CAP_ROTATE_SECONDS  ring file duration (default: 300 = 5min)
+#   CAP_RING_FILES      ring file count   (default: 864 = ~72h at 5min)
+#   CAP_ROTATE_KB       per-file size cap (default: 524288 = 512MB) — acts
+#                       as a runaway-flood safety net alongside duration
+#   PCAP_DIR            host path for storage (default: /var/pcap/sip)
+#
+# Exporter (the click-to-download endpoint Grafana links to):
+#
+#   EXPORTER_BIND       address to bind on the host (default: 127.0.0.1 —
+#                       expose only via a TLS-terminating reverse proxy
+#                       or a private/management network)
+#   EXPORTER_PORT       host port (default: 8080)
+
+services:
+  sip-pcap-recorder:
+    image: nicolaka/netshoot:latest
+    container_name: sip-pcap-recorder
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ${PCAP_DIR:-/var/pcap/sip}:/pcap
+    environment:
+      - CAP_IFACE=${CAP_IFACE:-any}
+      - CAP_FILTER=${CAP_FILTER:-port 5060 or port 5061}
+      - CAP_SNAPLEN=${CAP_SNAPLEN:-2000}
+      - CAP_ROTATE_SECONDS=${CAP_ROTATE_SECONDS:-300}
+      - CAP_RING_FILES=${CAP_RING_FILES:-864}
+      - CAP_ROTATE_KB=${CAP_ROTATE_KB:-524288}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-lc"]
+    # $$VAR escapes Compose interpolation so the value is read inside the
+    # container from the environment block above, not from the host shell.
+    command:
+      - |
+        set -e
+        mkdir -p /pcap
+        # dumpcap drops CAP_DAC_OVERRIDE before opening the output file,
+        # so /pcap must be writable by the wireshark group regardless of
+        # who owns it on the host.
+        chown root:wireshark /pcap 2>/dev/null || true
+        chmod 0775 /pcap
+        echo "sip-pcap-recorder: iface=$$CAP_IFACE filter='$$CAP_FILTER' snaplen=$$CAP_SNAPLEN rotate=$${CAP_ROTATE_SECONDS}s ring=$$CAP_RING_FILES size=$${CAP_ROTATE_KB}KB"
+        exec dumpcap \
+          -i "$$CAP_IFACE" \
+          -s "$$CAP_SNAPLEN" \
+          -f "$$CAP_FILTER" \
+          -b "duration:$$CAP_ROTATE_SECONDS" \
+          -b "files:$$CAP_RING_FILES" \
+          -b "filesize:$$CAP_ROTATE_KB" \
+          -w /pcap/sip.pcapng
+    logging:
+      options:
+        max-size: "10m"
+
+  sip-pcap-exporter:
+    build: ./exporter
+    container_name: sip-pcap-exporter
+    restart: unless-stopped
+    ports:
+      - "${EXPORTER_BIND:-127.0.0.1}:${EXPORTER_PORT:-8080}:8080"
+    volumes:
+      - ${PCAP_DIR:-/var/pcap/sip}:/pcap:ro
+    environment:
+      - PCAP_DIR=/pcap
+      - TZ=UTC
+    depends_on:
+      - sip-pcap-recorder
+    logging:
+      options:
+        max-size: "10m"

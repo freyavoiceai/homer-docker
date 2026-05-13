@@ -1,0 +1,107 @@
+#!/bin/bash
+# CGI: GET /slice?call_id=<cid>&from=<ts>&to=<ts>[&keep_hep=1]
+#
+# Accepts `from`/`to` as either epoch milliseconds (what Grafana's
+# ${__from} / ${__to} dashboard variables emit) or "YYYY-MM-DD HH:MM:SS".
+# Streams back a pcapng filtered to the requested call.
+set -euo pipefail
+
+PCAP_DIR="${PCAP_DIR:-/pcap}"
+# dumpcap names ring files sip_<seq>_<ts>.pcapng; accept .pcap and legacy
+# dash-separated names as well so manually placed captures still work.
+RING_GLOBS=("sip_*.pcapng" "sip_*.pcap" "sip-*.pcapng" "sip-*.pcap")
+
+emit_status() {
+  printf 'Status: %s\r\nContent-Type: text/plain\r\n\r\n%s\n' "$1" "$2"
+  exit 0
+}
+
+urldecode() {
+  local s="${1//+/ }"
+  printf '%b' "${s//%/\\x}"
+}
+
+# --- parse QUERY_STRING -----------------------------------------------------
+CALL_ID=""; FROM=""; TO=""
+IFS='&' read -ra PARTS <<<"${QUERY_STRING:-}"
+for p in "${PARTS[@]}"; do
+  [ -z "$p" ] && continue
+  k="${p%%=*}"
+  v="${p#*=}"
+  v="$(urldecode "$v")"
+  case "$k" in
+    call_id|callid|cid) CALL_ID="$v" ;;
+    from)               FROM="$v" ;;
+    to)                 TO="$v" ;;
+  esac
+done
+
+[ -n "$FROM" ] && [ -n "$TO" ] || emit_status 400 "missing required query params: from, to"
+
+# --- input validation -------------------------------------------------------
+to_iso() {
+  local v="$1"
+  if [[ "$v" =~ ^[0-9]+$ ]]; then
+    local secs=$(( v >= 10000000000 ? v / 1000 : v ))   # ms vs s
+    date -u -d "@$secs" +"%Y-%m-%d %H:%M:%S"
+  elif [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[T\ ][0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+    printf '%s' "${v//T/ }"
+  else
+    return 1
+  fi
+}
+
+FROM_ISO="$(to_iso "$FROM")" || emit_status 400 "bad 'from' (epoch ms/sec or YYYY-MM-DD HH:MM:SS)"
+TO_ISO="$(to_iso "$TO")"     || emit_status 400 "bad 'to' (epoch ms/sec or YYYY-MM-DD HH:MM:SS)"
+
+if [ -n "$CALL_ID" ]; then
+  # musl regex (Alpine) doesn't reliably implement {N,M} quantifiers,
+  # so length and character set are checked separately.
+  if [ "${#CALL_ID}" -gt 256 ] || [[ ! "$CALL_ID" =~ ^[A-Za-z0-9._@+\-]+$ ]]; then
+    emit_status 400 "bad call_id (allowed: A-Z a-z 0-9 . _ @ + -, max 256 chars)"
+  fi
+fi
+
+# --- gather ring files ------------------------------------------------------
+shopt -s nullglob
+files=()
+for g in "${RING_GLOBS[@]}"; do
+  for f in "$PCAP_DIR"/$g; do files+=("$f"); done
+done
+[ "${#files[@]}" -gt 0 ] || emit_status 503 "no capture files in $PCAP_DIR yet"
+
+# --- run the pipeline -------------------------------------------------------
+TMPDIR_R="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_R"' EXIT
+MERGED="$TMPDIR_R/merged.pcapng"
+TRIMMED="$TMPDIR_R/trimmed.pcapng"
+OUT="$TMPDIR_R/slice.pcapng"
+
+if ! mergecap -w "$MERGED" "${files[@]}" 2>"$TMPDIR_R/err"; then
+  emit_status 500 "mergecap failed: $(cat "$TMPDIR_R/err")"
+fi
+
+if ! editcap -A "$FROM_ISO" -B "$TO_ISO" "$MERGED" "$TRIMMED" 2>"$TMPDIR_R/err"; then
+  emit_status 500 "editcap failed: $(cat "$TMPDIR_R/err")"
+fi
+
+if [ -n "$CALL_ID" ]; then
+  if ! tshark -r "$TRIMMED" -Y "sip.Call-ID == \"$CALL_ID\"" -w "$OUT" 2>"$TMPDIR_R/err"; then
+    emit_status 500 "tshark failed: $(cat "$TMPDIR_R/err")"
+  fi
+else
+  cp "$TRIMMED" "$OUT"
+fi
+
+# --- stream -----------------------------------------------------------------
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+safe_cid="${CALL_ID//[^A-Za-z0-9._-]/_}"
+fname="sip-${ts}${safe_cid:+-${safe_cid}}.pcapng"
+size="$(stat -c%s "$OUT")"
+
+printf 'Status: 200\r\n'
+printf 'Content-Type: application/vnd.tcpdump.pcap\r\n'
+printf 'Content-Disposition: attachment; filename="%s"\r\n' "$fname"
+printf 'Content-Length: %s\r\n' "$size"
+printf '\r\n'
+cat "$OUT"
