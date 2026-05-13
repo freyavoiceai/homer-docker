@@ -30,6 +30,18 @@
       "tooltip": "",
       "type": "link",
       "url": "/d/homer10/call-flow?kiosk=true"
+    },
+    {
+      "asDropdown": false,
+      "icon": "cloud-download",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Download SIP PCAP",
+      "tooltip": "Slice the current Call-ID + time range from the probe ring buffer",
+      "type": "link",
+      "url": "http://${probe}/cgi-bin/slice?call_id=${callid}&from=${__from}&to=${__to}"
     }
   ],
   "liveNow": false,
@@ -484,11 +496,29 @@
         "type": "textbox"
       },
       {
-        "current": { "selected": false, "text": "", "value": "" },
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
         "hide": 0,
         "label": "Call ID",
         "name": "callid",
         "query": "",
+        "skipUrlSync": false,
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "sbc-1.internal:18080",
+          "value": "sbc-1.internal:18080"
+        },
+        "description": "host:port of the SBC sip-pcap-exporter for the path that handled this call. Override per call as needed.",
+        "hide": 0,
+        "label": "PCAP Probe",
+        "name": "probe",
+        "query": "sbc-1.internal:18080",
         "skipUrlSync": false,
         "type": "textbox"
       }
